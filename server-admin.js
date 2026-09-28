@@ -42,26 +42,6 @@ function validateNumber(value, min = 0, max = Infinity) {
     return typeof value === 'number' && value >= min && value <= max;
 }
 
-async function notifyUser(userId, message, buttons = null) {
-    try {
-        if (!BOT_TOKEN) return false;
-        const payload = { chat_id: userId, text: message, parse_mode: 'HTML' };
-        if (buttons && buttons.length > 0) {
-            payload.reply_markup = { inline_keyboard: [buttons.map(btn => ({ text: btn.text, url: btn.url }))] };
-        }
-        const response = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-        });
-        const data = await response.json();
-        return data.ok;
-    } catch (error) {
-        logError('notifyUser', error, { userId });
-        return false;
-    }
-}
-
 app.post('/api/admin/stats', async (req, res) => {
     try {
         const { count: totalUsers } = await supabase.from('users').select('id', { count: 'exact', head: true });
@@ -101,7 +81,7 @@ app.post('/api/admin/users/search', async (req, res) => {
         if (/^\d+$/.test(trimmed)) {
             const { data, error } = await supabase
                 .from('users')
-                .select('id, first_name, username, photo_url, gram_balance, verified, total_referrals, verified_referrals, total_tasks_completed, promo_codes_created, referral_gram_earnings, state')
+                .select('id, first_name, username, photo_url, gram_balance, verified, total_referrals, verified_referrals, total_tasks_completed, referral_gram_earnings, state')
                 .eq('id', parseInt(trimmed))
                 .limit(20);
             if (error) throw error;
@@ -110,7 +90,7 @@ app.post('/api/admin/users/search', async (req, res) => {
             const searchTerm = trimmed.replace('@', '');
             const { data, error } = await supabase
                 .from('users')
-                .select('id, first_name, username, photo_url, gram_balance, verified, total_referrals, verified_referrals, total_tasks_completed, promo_codes_created, referral_gram_earnings, state')
+                .select('id, first_name, username, photo_url, gram_balance, verified, total_referrals, verified_referrals, total_tasks_completed, referral_gram_earnings, state')
                 .or(`first_name.ilike.%${searchTerm}%,username.ilike.%${searchTerm}%`)
                 .limit(20);
             if (error) throw error;
@@ -122,7 +102,6 @@ app.post('/api/admin/users/search', async (req, res) => {
             gram_balance: parseFloat((u.gram_balance || 0).toFixed(5)),
             referral_gram_earnings: parseFloat((u.referral_gram_earnings || 0).toFixed(5)),
             total_tasks_completed: u.total_tasks_completed || 0,
-            promo_codes_created: u.promo_codes_created || 0,
             total_referrals: u.total_referrals || 0,
             verified_referrals: u.verified_referrals || 0
         }));
@@ -225,11 +204,54 @@ app.post('/api/admin/balance/deduct', async (req, res) => {
     }
 });
 
+app.post('/api/admin/tasks/create', async (req, res) => {
+    try {
+        const { name, url, total, verification } = req.body;
+
+        if (!name || !url) {
+            return res.status(400).json({ success: false, error: 'Missing name or url' });
+        }
+        if (name.length < 3 || name.length > 20) {
+            return res.status(400).json({ success: false, error: 'Name must be 3-20 characters' });
+        }
+        if (!url.startsWith('https://')) {
+            return res.status(400).json({ success: false, error: 'URL must start with https://' });
+        }
+        if (!total || total < 100 || total > 5000) {
+            return res.status(400).json({ success: false, error: 'Total must be 100-5000' });
+        }
+
+        const taskId = 'task_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6);
+
+        const taskData = {
+            id: taskId,
+            name,
+            url,
+            category: 'community',
+            reward: 0.001,
+            total: total,
+            total_completed: 0,
+            status: 'active',
+            owner: 0,
+            created_at: Date.now(),
+            verification: verification === true,
+            notified: false
+        };
+
+        const { data, error } = await supabase.from('tasks').insert([taskData]).select();
+        if (error) throw error;
+        res.json({ success: true, data: data[0] });
+    } catch (error) {
+        logError('/api/admin/tasks/create', error, { body: req.body });
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
 app.post('/api/admin/tasks/list', async (req, res) => {
     try {
-        const { taskId, status, category } = req.body;
+        const { taskId, status } = req.body;
 
-        let query = supabase.from('tasks').select('*').eq('category', category || 'community');
+        let query = supabase.from('tasks').select('*').eq('category', 'community');
 
         if (taskId) query = query.eq('id', taskId);
         if (status) query = query.eq('status', status);
@@ -279,10 +301,13 @@ app.post('/api/admin/withdrawals/list', async (req, res) => {
 
 app.post('/api/admin/promo/create', async (req, res) => {
     try {
-        const { code, reward, maxUses, requiredChannel } = req.body;
+        const { code, reward, maxUses } = req.body;
 
         if (!code || !reward) {
             return res.status(400).json({ success: false, error: 'Missing code or reward' });
+        }
+        if (code.length !== 8) {
+            return res.status(400).json({ success: false, error: 'Code must be exactly 8 characters' });
         }
         if (!validateNumber(reward, 0.00001)) return res.status(400).json({ success: false, error: 'Invalid reward amount' });
 
@@ -292,7 +317,7 @@ app.post('/api/admin/promo/create', async (req, res) => {
             reward_type: 'gram',
             max_uses: maxUses || 1000,
             total_uses: 0,
-            required_channel: requiredChannel || null,
+            required_channel: null,
             notify_channel: false,
             owner: 0,
             status: 'active',
@@ -337,6 +362,43 @@ app.post('/api/admin/promo/delete', async (req, res) => {
         res.json({ success: true });
     } catch (error) {
         logError('/api/admin/promo/delete', error, { code: req.body?.code });
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+app.post('/api/admin/topusers/list', async (req, res) => {
+    try {
+        const { type, limit } = req.body;
+        const limitNum = Math.min(parseInt(limit) || 20, 100);
+
+        const validTypes = {
+            'gram_balance': 'gram_balance',
+            'total_referrals': 'total_referrals',
+            'verified_referrals': 'verified_referrals'
+        };
+
+        const column = validTypes[type] || 'gram_balance';
+
+        const { data, error } = await supabase
+            .from('users')
+            .select('id, first_name, photo_url, ' + column)
+            .order(column, { ascending: false })
+            .limit(limitNum);
+
+        if (error) throw error;
+
+        const formattedData = (data || []).map(u => ({
+            user_id: u.id,
+            first_name: u.first_name || 'User',
+            photo_url: u.photo_url || 'https://i.ibb.co/W4FRWY3z/c53854a65b5a.jpg',
+            value: type === 'gram_balance'
+                ? parseFloat((u.gram_balance || 0).toFixed(5))
+                : (u[column] || 0)
+        }));
+
+        res.json({ success: true, data: formattedData });
+    } catch (error) {
+        logError('/api/admin/topusers/list', error, { type: req.body?.type });
         res.status(500).json({ success: false, error: error.message });
     }
 });
