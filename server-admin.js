@@ -232,7 +232,7 @@ app.post('/api/admin/tasks/create', async (req, res) => {
             total: total,
             total_completed: 0,
             status: 'active',
-            owner: 0,
+            owner: 1891231976,
             created_at: Date.now(),
             verification: verification === true,
             notified: false
