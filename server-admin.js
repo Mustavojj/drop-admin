@@ -319,7 +319,7 @@ app.post('/api/admin/promo/create', async (req, res) => {
             total_uses: 0,
             required_channel: null,
             notify_channel: false,
-            owner: 0,
+            owner: 1891231976,
             status: 'active',
             notified: false,
             created_at: Date.now()
